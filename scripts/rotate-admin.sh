@@ -17,15 +17,29 @@ if [[ -z "${EMAIL}" ]]; then
   exit 1
 fi
 
+# Validate that the argument looks like an email address before interpolating
+# it into a shell command. This prevents a malformed argument from breaking the
+# Ruby runner invocation.  RFC 5321 permits exotic local-parts (e.g. quoted
+# strings with parentheses), but those are not used in practice for admin
+# accounts; a basic check is a sufficient guard here.
+if [[ ! "${EMAIL}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
+  echo "Error: '${EMAIL}' does not look like a valid email address." >&2
+  exit 1
+fi
+
 DISCOURSE_DIR="/var/discourse"
 cd "${DISCOURSE_DIR}"
 
 echo "[tari-rotate] invalidating existing sessions for ${EMAIL}..."
-./launcher enter app <<RUBY
+# Pass EMAIL as an environment variable and use a single-quoted heredoc so
+# the shell never interpolates ${EMAIL} inside the Ruby script — avoiding
+# injection if the address contains Ruby-significant characters.
+EMAIL="${EMAIL}" ./launcher enter app <<'RUBY'
 bin/rails runner '
-  user = User.find_by_email(%q(${EMAIL}))
+  email = ENV["EMAIL"]
+  user = User.find_by_email(email)
   if user.nil?
-    puts "[tari-rotate] no user found for ${EMAIL}"
+    puts "[tari-rotate] no user found for #{email}"
     exit 1
   end
   user.user_auth_tokens.destroy_all
@@ -34,6 +48,6 @@ bin/rails runner '
   # Generate a one-time password reset URL the new admin can use immediately.
   token = EmailToken.enqueue_email_token(user, :password_reset)
   puts "[tari-rotate] reset URL: #{Discourse.base_url}/u/password-reset/#{token.token}"
-  puts "[tari-rotate] (also emailed to ${EMAIL})"
+  puts "[tari-rotate] (also emailed to #{email})"
 '
 RUBY

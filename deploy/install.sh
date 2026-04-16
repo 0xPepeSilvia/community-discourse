@@ -101,7 +101,10 @@ install_docker() {
 
 configure_firewall() {
   log "Configuring UFW: allow 22, 80, 443; deny everything else inbound."
-  ufw --force reset
+  # Do NOT use `ufw --force reset`: it wipes all rules immediately, which
+  # terminates the current SSH session on a remote server before the allow-22
+  # rule is re-added. Instead set the defaults and add rules while UFW is
+  # either still off or already running — the existing session is not affected.
   ufw default deny incoming
   ufw default allow outgoing
   ufw allow 22/tcp   comment 'SSH'
@@ -130,7 +133,7 @@ render_app_yml() {
   mkdir -p "${DISCOURSE_DIR}/containers"
   # envsubst substitutes ONLY the variables that appear in the template.
   # We pass an explicit allow-list so a stray ${...} in a comment doesn't blow up.
-  local vars='$FORUM_DOMAIN $ADMIN_EMAIL $SMTP_ADDRESS $SMTP_PORT $SMTP_USER_NAME $SMTP_PASSWORD $SMTP_DOMAIN $NOTIFICATION_EMAIL $DB_SHARED_BUFFERS $UNICORN_WORKERS $BACKUP_RETENTION_DAYS $LETSENCRYPT_ACCOUNT_EMAIL'
+  local vars='$DISCOURSE_VERSION $FORUM_DOMAIN $ADMIN_EMAIL $SMTP_ADDRESS $SMTP_PORT $SMTP_USER_NAME $SMTP_PASSWORD $SMTP_DOMAIN $NOTIFICATION_EMAIL $DB_SHARED_BUFFERS $UNICORN_WORKERS $BACKUP_RETENTION_DAYS $LETSENCRYPT_ACCOUNT_EMAIL'
   envsubst "${vars}" < "${APP_YML_TEMPLATE}" > "${DISCOURSE_DIR}/containers/app.yml"
   chmod 600 "${DISCOURSE_DIR}/containers/app.yml"
 }
@@ -171,9 +174,13 @@ EOF
 create_bootstrap_admin() {
   log "Ensuring bootstrap admin account exists (${ADMIN_EMAIL})..."
   # The Rails console will noop if the user already exists with admin=true.
-  "${DISCOURSE_DIR}/launcher" enter app <<'RUBY' || true
+  # We capture the exit code rather than using `|| true` so a genuine failure
+  # (e.g. the container not running, the database not ready) is surfaced as a
+  # warning instead of being silently swallowed and reported as success.
+  if ! ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_USERNAME="${ADMIN_USERNAME:-tari_admin}" \
+       "${DISCOURSE_DIR}/launcher" enter app <<'RUBY'
 bin/rails runner '
-  email = ENV["ADMIN_EMAIL"] || "admin@tari.com"
+  email    = ENV["ADMIN_EMAIL"]    || "admin@tari.com"
   username = ENV["ADMIN_USERNAME"] || "tari_admin"
   user = User.find_by_email(email) || User.create!(
     email: email,
@@ -188,6 +195,11 @@ bin/rails runner '
   puts "[tari] Admin account ready: #{user.username} <#{user.email}>"
 '
 RUBY
+  then
+    warn "Bootstrap admin creation failed — the container may still be starting."
+    warn "Re-run 'sudo ./deploy/install.sh' once the forum is reachable, or"
+    warn "create the admin manually via the Discourse web UI."
+  fi
 }
 
 summary() {

@@ -10,6 +10,10 @@
 ## commit, pull on the host, and run `./launcher rebuild app`.
 ## =============================================================================
 
+## Discourse release to pin. Set DISCOURSE_VERSION in .env (default: stable).
+## Bump this value deliberately during scheduled upgrade windows.
+version: "${DISCOURSE_VERSION}"
+
 templates:
   - "templates/postgres.template.yml"
   - "templates/redis.template.yml"
